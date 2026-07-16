@@ -1,0 +1,26 @@
+# The manifest a push to main applies. It creates its own namespace and a Deployment in
+# it — which is exactly the power the ci:main-deployer group is granted, and which a
+# branch build (ci:branch-reader) is refused. The pause image is already on the kind
+# node, so applying this pulls nothing.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: app
+  labels: {app: web}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+        - name: web
+          image: registry.k8s.io/pause:3.10

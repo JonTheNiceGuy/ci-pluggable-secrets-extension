@@ -1,0 +1,15 @@
+{
+  "method": "POST",
+  "path": "/secrets",
+  "headers": {
+    "Host": "172.17.0.1:3002",
+    "User-Agent": "Woodpecker/3.16.0 (server-extensions)",
+    "Content-Length": "1733",
+    "Content-Digest": "sha-256=:JnsvjEtJL8xnyUORaZ5hlo10w1OeBpJNUdjCxZYV7BI=:",
+    "Content-Type": "application/json",
+    "Signature": "woodpecker-ci-extensions=:AsueyYcPPiqHC7FMsvJop511IYnzBCHXV3qE1f572LYumyK+Jl+9r9tiJZhNwcs4Y5GwmxpFfCORpAL7vmArBA==:",
+    "Signature-Input": "woodpecker-ci-extensions=(\"@request-target\" \"content-digest\");created=1784066615;alg=\"ed25519\"",
+    "Accept-Encoding": "gzip"
+  },
+  "body": "{\"repo\":{\"id\":1,\"forge_id\":1,\"forge_remote_id\":\"1\",\"org_id\":1,\"owner\":\"droneadmin\",\"name\":\"drone-environ-demo\",\"full_name\":\"droneadmin/drone-environ-demo\",\"avatar_url\":\"http://172.17.0.1:3000/avatars/2ec6d613322e686161bd2a31c7f58b01\",\"forge_url\":\"http://172.17.0.1:3000/droneadmin/drone-environ-demo\",\"clone_url\":\"http://172.17.0.1:3000/droneadmin/drone-environ-demo.git\",\"clone_url_ssh\":\"git@172.17.0.1:droneadmin/drone-environ-demo.git\",\"default_branch\":\"main\",\"pr_enabled\":true,\"timeout\":60,\"visibility\":\"public\",\"private\":false,\"trusted\":{\"network\":false,\"volumes\":false,\"security\":false},\"require_approval\":\"forks\",\"approval_allowed_users\":null,\"active\":true,\"allow_pr\":true,\"allow_deploy\":true,\"config_file\":\"\",\"cancel_previous_pipeline_events\":[\"push\",\"pull_request\"],\"netrc_trusted\":null,\"config_extension_endpoint\":\"\",\"config_extension_exclusive\":false,\"config_extension_netrc\":false,\"registry_extension_endpoint\":\"\",\"registry_extension_netrc\":false,\"secret_extension_endpoint\":\"\",\"secret_extension_netrc\":false},\"pipeline\":{\"id\":3,\"number\":3,\"author\":\"droneadmin\",\"parent\":0,\"event\":\"manual\",\"event_reason\":null,\"status\":\"created\",\"errors\":null,\"created\":1784066614,\"updated\":1784066614,\"started\":0,\"finished\":0,\"deploy_to\":\"\",\"deploy_task\":\"\",\"commit\":\"b51cb084ff9e712342eea9b07a3a6216f6de923d\",\"branch\":\"main\",\"rerun_count\":0,\"ref\":\"main\",\"refspec\":\"\",\"title\":\"\",\"message\":\"MANUAL PIPELINE @ main\",\"timestamp\":1784066614,\"sender\":\"\",\"author_avatar\":\"http://172.17.0.1:3000/avatars/2ec6d613322e686161bd2a31c7f58b01\",\"author_email\":\"droneadmin@example.com\",\"forge_url\":\"http://172.17.0.1:3000/droneadmin/drone-environ-demo/commit/b51cb084ff9e712342eea9b07a3a6216f6de923d\",\"reviewed_by\":\"\",\"reviewed\":0,\"version\":\"3.16.0\"}}\n"
+}

@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cpse.fullname" . }}
+  labels:
+    {{- include "cpse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cpse.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll the pods when the config or secrets change.
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+        checksum/secrets: {{ printf "%v-%v-%v" .Values.pluginSecret .Values.existingSecret .Values.signingKeys | sha256sum }}
+      labels:
+        {{- include "cpse.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: DRONE_ENV_PLUGIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cpse.pluginSecretName" . }}
+                  key: DRONE_ENV_PLUGIN_SECRET
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.server.port | default 3000 }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/drone-environ/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- if .Values.signingKeys }}
+            - name: keys
+              mountPath: /etc/drone-environ/keys
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cpse.fullname" . }}-config
+        {{- if .Values.signingKeys }}
+        - name: keys
+          secret:
+            secretName: {{ include "cpse.fullname" . }}-keys
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

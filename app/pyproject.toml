@@ -1,0 +1,45 @@
+[project]
+name = "ci-pluggable-secrets-extension"
+version = "0.1.0"
+description = "A pluggable Drone CI environment extension"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.139.0",
+    "uvicorn[standard]>=0.51.0",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    # Needed by the bundled buildtoken plugin; the [crypto] extra pulls in
+    # cryptography, without which PyJWT cannot do the asymmetric algorithms.
+    "pyjwt[crypto]>=2.13.0",
+    # Structured-field parsing, for the RFC 9421 signatures Woodpecker sends.
+    "http-sfv>=0.9.9",
+]
+
+[project.scripts]
+ci-pluggable-secrets-extension = "ci_pluggable_secrets_extension.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The plugin registry and the one shipped plugin (buildtoken) live under
+# ci_pluggable_secrets_extension.plugins, so they package with ci_pluggable_secrets_extension. The example
+# plugins under docs/sample_plugins/ are deliberately NOT packaged — they are dropped
+# onto a plugin_paths directory at deploy time (see docs/sample_plugins/README.md).
+packages = ["ci_pluggable_secrets_extension", "ci_pluggable_secrets_plugin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# A warning is a defect that has not bitten yet. Fail on it rather than let it scroll
+# past — a deprecation here is a library about to break the signature verification.
+filterwarnings = ["error"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    # httpx2 is httpx's successor (same author, now under the pydantic org). Starlette's
+    # TestClient deprecates plain httpx in favour of it.
+    "httpx2>=2.7.0",
+]

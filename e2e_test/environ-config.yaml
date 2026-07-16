@@ -1,0 +1,95 @@
+server:
+  host: 0.0.0.0
+  port: 3001
+  secret: ${DRONE_ENV_PLUGIN_SECRET}
+  log_level: DEBUG
+  on_plugin_error: fail
+
+# Serve Woodpecker's secret extension as well as Drone's environment extension, from
+# the same plugins. Woodpecker signs with an ed25519 key pair rather than a shared
+# secret, so what we hold is its public key — fetched from its own API by up.sh.
+woodpecker:
+  path: /secrets
+  # Fetch Woodpecker's public key from its live endpoint (via the host gateway) rather
+  # than a mounted file, and auto-refresh it. This way a fresh `up` after a `down` — which
+  # gives Woodpecker a new signing key — is picked up on its own, instead of failing
+  # against a stale key file. key_max_age controls how often a running extension re-fetches.
+  public_key_url: http://${HOST_ADDR}:8000/api/signature/public-key
+  key_max_age: 300
+
+# Also serve Drone's secret extension, so a step could pull a named secret with
+# `from_secret`. It reuses server.secret (= DRONE_SECRET_PLUGIN_TOKEN on the runner) and
+# must not share a path with woodpecker above. Inert here until a pipeline uses from_secret.
+drone_secret:
+  path: /secret
+
+# stdout and deploytarget are example plugins, not part of the installed package.
+# They are mounted at this path (see docker-compose.yml) and picked up here, the same
+# way you would install your own plugin. buildtoken is a shipped, built-in plugin and
+# needs no path. See docs/sample_plugins/README.md.
+plugin_paths:
+  - /etc/drone-environ/plugins
+
+plugins:
+  # A bundled, built-in plugin: logs the request the CI passes in and returns nothing.
+  # Enabled here so the testenv logs show exactly what Drone/Woodpecker send.
+  logreceive:
+    level: INFO
+
+  # Runs next: announces itself in the response (the variable verify.py checks). It also
+  # dumps the request to stdout; keep that compact (single line) since logreceive above
+  # already logs the request — pretty: true here is what fills the log with multi-line blocks.
+  stdout:
+    pretty: false
+    variable: stdout_plugin
+
+  # Runs second: hands out credentials, but only to a build someone promoted.
+  deploytarget:
+    require_promote: true
+    targets:
+      production:
+        DEPLOY_URL: https://prod.example.com
+        DEPLOY_TOKEN:
+          data: ${PROD_DEPLOY_TOKEN}
+          mask: true
+      staging:
+        DEPLOY_URL: https://staging.example.com
+        DEPLOY_TOKEN:
+          data: ${STAGING_DEPLOY_TOKEN}
+          mask: true
+
+  # Runs third: gives every build a signed JWT describing itself, which the build
+  # can present to a receiving service instead of a long-lived credential.
+  buildtoken:
+    # The issuer, and where verifiers (a Kubernetes API server, AWS IAM) fetch the keys.
+    # This must be an HTTPS URL a cluster can reach with a real certificate, because
+    # native OIDC requires it — so it is the pagekite kite that fronts this extension,
+    # injected as PAGEKITE_ISSUER (see docker-compose.yml). The token's `iss` is this,
+    # and a cluster's oidc-issuer-url / EKS issuerUrl must match it exactly.
+    issuer: ${PAGEKITE_ISSUER}
+    ttl: 300
+
+    # A fixed audience, used as the `clientId` every cluster is configured with (and the
+    # `aud` an IAM role's trust policy checks). A real deployment can set a list here to
+    # serve several consumers from one token; the testenv uses one value.
+    audience: kubernetes
+
+    # The subject is composed from these, GitHub's mechanism. The default reproduces
+    # GitHub's own subjects: repo:OWNER/REPO:environment:prod, :pull_request, :ref:X
+    include_claim_keys: [repo, context]
+
+    # Also emit a `groups` claim: the subject and each of its segment-prefixes
+    # (repo:OWNER/REPO, then repo:OWNER/REPO:ref:refs/heads/main, ...). The cluster maps
+    # this via groupsClaim, so RBAC grants by build context; the values double as what an
+    # IAM trust policy matches on `sub`. See e2e_test/k8s/rbac.yaml.tmpl.
+    emit_groups: true
+
+    # Every key here is published for verification; the newest by filename signs.
+    # Dropping a new key in and restarting is the rotation. See rotate-key.sh.
+    key_dir: /etc/drone-environ/keys
+
+    # default_claims: github is the default, so the token already carries repository,
+    # repository_owner, actor, event_name, ref, ref_type, sha, environment, run_id,
+    # run_number and friends. Anything below is merged over that.
+    claims:
+      deployment_reason: build.params.REASON

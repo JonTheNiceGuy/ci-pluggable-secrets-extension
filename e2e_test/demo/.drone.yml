@@ -1,0 +1,87 @@
+kind: pipeline
+type: docker
+name: default
+
+steps:
+  - name: show-injected-environment
+    image: alpine:3.24
+    commands:
+      # Everything printed below is injected by the extension: none of it is set in
+      # this file, and none of it is a Drone built-in.
+      #
+      # Note the $$ escapes. Drone runs envsubst over this file when it parses it,
+      # long before the runner asks the extension for anything, so a plain
+      # ${DEPLOY_TARGET:-<unset>} would resolve to "<unset>" then and there. $$ defers
+      # the expansion to the shell inside the running step, where the variable exists.
+      - echo "stdout_plugin=$${stdout_plugin:-<unset>}"
+      - test "$${stdout_plugin}" = "enabled"
+
+      - echo "this build is a '$${DRONE_BUILD_EVENT}' to '$${DRONE_DEPLOY_TO:-nowhere}'"
+      - echo "DEPLOY_TARGET=$${DEPLOY_TARGET:-<unset>}"
+      - echo "DEPLOY_URL=$${DEPLOY_URL:-<unset>}"
+      # Masked, so Drone replaces the value with ****** in this log.
+      - echo "DEPLOY_TOKEN=$${DEPLOY_TOKEN:-<unset>}"
+      - echo "DRONE_BUILD_TOKEN=$${DRONE_BUILD_TOKEN:-<unset>}"
+
+      - |
+        if [ "$${DRONE_BUILD_EVENT}" = "promote" ]; then
+          test -n "$${DEPLOY_TOKEN}" || { echo "FAIL: a promotion got no credentials"; exit 1; }
+          echo "OK: promoted to $${DEPLOY_TARGET}, and got its credentials"
+        else
+          test -z "$${DEPLOY_TOKEN}" || { echo "FAIL: a $${DRONE_BUILD_EVENT} was given deploy credentials"; exit 1; }
+          echo "OK: a $${DRONE_BUILD_EVENT} gets no deploy credentials"
+        fi
+
+  # Stands in for the service the build authenticates to. It verifies the JWT the
+  # extension issued using only the public key it fetches from the extension — no
+  # shared secret, and no long-lived credential in this repo.
+  - name: verify-build-token
+    image: python:3.14-slim
+    environment:
+      # The issuer the verifier pins — the extension's public HTTPS kite. up.sh fills this
+      # in when it pushes the repo (it depends on your pagekite suffix).
+      TRUSTED_ISSUER: __PAGEKITE_ISSUER__
+      EXPECTED_AUDIENCE: kubernetes
+    commands:
+      - pip install --quiet --disable-pip-version-check 'pyjwt[crypto]>=2.13'
+      - python verify_token.py
+
+  # Ask the cluster, in the open, what this build's token is authorized to do. kubectl is
+  # pointed at the API server and authenticates as this build with nothing but its token;
+  # `kubectl auth can-i` then returns the API server's own yes/no per action. The answers
+  # differ by build context (branch / main / promote) because the token's groups do.
+  # ($$ defers expansion to the step's shell — Drone would otherwise substitute $... itself.)
+  - name: k8s-can-i
+    image: alpine/k8s:1.36.2
+    commands:
+      - kubectl config set-cluster kind --server=https://172.17.0.1:6443 --certificate-authority=cluster-ca.pem --embed-certs=true
+      - kubectl config set-credentials build --token="$$DRONE_BUILD_TOKEN"
+      - kubectl config set-context kind --cluster=kind --user=build
+      - kubectl config use-context kind
+      - 'echo "this $$DRONE_BUILD_EVENT build is authorized to:"'
+      - |
+        for action in 'get pods -n demo' 'get deployments -n production' \
+                      'create deployments -n app' 'patch deployments -n production' \
+                      'create namespaces' 'get secrets -n production'; do
+          echo "  can-i $$action -> $$(kubectl auth can-i $$action 2>/dev/null)"
+        done
+    when:
+      event:
+        - pull_request
+        - push
+        - promote
+
+  # The build authenticates to the kind cluster with the same token — no kubeconfig
+  # secret in this repo. What it is allowed to do there depends only on what this build
+  # is: a branch push may read pods, a push to main may apply a Deployment, a promotion
+  # to production may redeploy. k8s-deploy.sh does the allowed thing and proves the next
+  # tier up is refused. DRONE_BUILD_TOKEN and the DRONE_* context are injected by Drone.
+  - name: k8s-deploy
+    image: alpine/k8s:1.36.2
+    commands:
+      - bash k8s-deploy.sh
+    when:
+      event:
+        - pull_request
+        - push
+        - promote

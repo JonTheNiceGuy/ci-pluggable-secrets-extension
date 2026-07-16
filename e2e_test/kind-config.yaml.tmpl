@@ -1,0 +1,42 @@
+# kind cluster for the testenv. Rendered to kind-config.yaml by kind-up.sh, which fills
+# in the __PLACEHOLDERS__ (extraMounts.hostPath must be an absolute path, so it cannot be
+# committed literally).
+#
+# The one non-default thing here is native OIDC: the API server is given a structured
+# AuthenticationConfiguration naming our issuer, so it validates a build token itself and
+# maps its claims to a username + groups. A kubeadm cluster uses the identical file; EKS
+# expresses the same fields through its own API. See e2e_test/k8s/.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # Bind the API server to the docker0 gateway rather than 127.0.0.1, so the runner
+  # container (and the host) can reach it at the same address everything else uses, and
+  # so the API server's serving certificate covers that address.
+  apiServerAddress: "__HOST_ADDR__"
+  apiServerPort: 6443
+nodes:
+  - role: control-plane
+    extraMounts:
+      # The AuthenticationConfiguration the API server loads, mounted host -> node.
+      - hostPath: __TESTENV_DIR__/k8s/apiserver
+        containerPath: /etc/kubernetes/authn
+        readOnly: true
+    kubeadmConfigPatches:
+      # v1beta4 (Kubernetes 1.31+, so 1.36 here): extraArgs is a list of {name,value},
+      # not the old map. extraVolumes then mounts the host-path dir into the apiserver
+      # static pod so the flag's file actually exists inside that container.
+      # (StructuredAuthenticationConfiguration is GA and on by default in 1.34+, so no
+      # feature gate is needed.)
+      - |
+        apiVersion: kubeadm.k8s.io/v1beta4
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            - name: authentication-config
+              value: /etc/kubernetes/authn/auth-config.yaml
+          extraVolumes:
+            - name: authn
+              hostPath: /etc/kubernetes/authn
+              mountPath: /etc/kubernetes/authn
+              readOnly: true
+              pathType: DirectoryOrCreate

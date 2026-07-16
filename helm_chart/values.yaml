@@ -1,0 +1,70 @@
+replicaCount: 1
+
+image:
+  repository: ci-pluggable-secrets-extension
+  # Defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The shared secret the CI runner authenticates with — server.secret falls back to
+# $DRONE_ENV_PLUGIN_SECRET, which is injected from a Secret. Set `pluginSecret` to have the
+# chart create the Secret, or point `existingSecret` at one you manage (key:
+# DRONE_ENV_PLUGIN_SECRET).
+pluginSecret: ""
+existingSecret: ""
+
+# The buildtoken signing key(s), mounted into key_dir as files. Map of filename -> PEM.
+# The newest by filename signs; publish more than one to rotate. KEEP THESE OUT OF VALUES
+# committed to git — pass with `--set-file signingKeys.2026-01-01\.pem=key.pem` or a
+# separate values file.
+signingKeys: {}
+
+# Rendered verbatim to /etc/drone-environ/config.yaml. `${VAR}` is expanded from the
+# container environment at startup. The issuer MUST be the external HTTPS URL clients reach
+# (see ingress.host / docs/deploying.md).
+config:
+  server:
+    host: 0.0.0.0
+    port: 3000
+    secret: ${DRONE_ENV_PLUGIN_SECRET}
+  plugins:
+    buildtoken:
+      issuer: https://ci-secrets.example.com
+      audience: kubernetes
+      ttl: 300
+      key_dir: /etc/drone-environ/keys
+      include_claim_keys: [repo, context]
+      emit_groups: true
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ci-secrets.example.com
+  # e.g. [{secretName: ci-secrets-tls, hosts: [ci-secrets.example.com]}]
+  tls: []
+
+resources: {}
+
+# Matches the non-root uid baked into the image, and a locked-down container.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

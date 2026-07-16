@@ -1,0 +1,30 @@
+# How the API server authenticates a build token. Rendered to auth-config.yaml by
+# kind-up.sh (which fills in __ISSUER__ with the pagekite issuer URL) and mounted into the
+# control-plane node; the apiserver loads it via --authentication-config.
+#
+# This is the portable, provider-native way: the API server validates the JWT itself
+# against the issuer's JWKS and maps claims to a Kubernetes identity — no webhook, nothing
+# kind-specific. A kubeadm cluster uses this exact file; EKS expresses the same fields
+# through `aws eks associate-identity-provider-config`.
+#
+# `jwt` is a list, so this issuer coexists with any other OIDC provider the cluster already
+# trusts (they are told apart by the token's `iss`).
+apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+  - issuer:
+      # Must equal the token's `iss` exactly (the buildtoken `issuer` setting).
+      url: __ISSUER__
+      audiences:
+        - kubernetes
+    claimMappings:
+      # The username is the token subject; the prefix keeps it from colliding with any
+      # real user and mirrors EKS's usernamePrefix.
+      username:
+        claim: sub
+        prefix: "oidc:"
+      # The groups are the subject and its prefixes (buildtoken emit_groups); the "oidc:"
+      # prefix matches EKS's groupsPrefix, so RBAC binds e.g. oidc:repo:OWNER/REPO.
+      groups:
+        claim: groups
+        prefix: "oidc:"

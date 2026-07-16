@@ -1,0 +1,180 @@
+# A throwaway Drone + Gitea, with the environment extension wired into the runner.
+#
+# Everything addresses the host as 172.17.0.1 (the docker0 gateway) rather than
+# localhost. Drone hands the OAuth and webhook URLs it builds from these values to
+# *other* parties — your browser, and the Gitea container — so they have to be
+# addresses that resolve the same way everywhere. "localhost" would not: inside the
+# Gitea container it means Gitea itself.
+
+name: drone-environ-testenv
+
+services:
+  gitea:
+    image: gitea/gitea:1.27.0
+    environment:
+      USER_UID: 1000
+      USER_GID: 1000
+      GITEA__server__ROOT_URL: http://${HOST_ADDR}:3000/
+      GITEA__server__DOMAIN: ${HOST_ADDR}
+      GITEA__server__SSH_DOMAIN: ${HOST_ADDR}
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      # Gitea refuses to send webhooks to private addresses unless they are
+      # allow-listed, and the whole test env lives on one. Without this, pushes
+      # would never reach Drone and no build would ever start.
+      GITEA__webhook__ALLOWED_HOST_LIST: private
+    volumes:
+      - gitea-data:/data
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  drone:
+    image: drone/drone:2.28.2
+    depends_on: [gitea]
+    environment:
+      DRONE_GITEA_SERVER: http://${HOST_ADDR}:3000
+      DRONE_GITEA_CLIENT_ID: ${DRONE_GITEA_CLIENT_ID}
+      DRONE_GITEA_CLIENT_SECRET: ${DRONE_GITEA_CLIENT_SECRET}
+      DRONE_RPC_SECRET: ${DRONE_RPC_SECRET}
+      DRONE_SERVER_HOST: ${HOST_ADDR}:8080
+      DRONE_SERVER_PROTO: http
+      DRONE_USER_CREATE: username:${GITEA_ADMIN_USER},admin:true
+      DRONE_LOGS_DEBUG: "true"
+    volumes:
+      - drone-data:/data
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  runner:
+    image: drone/drone-runner-docker:1.8.5
+    depends_on: [drone, environ]
+    environment:
+      DRONE_RPC_PROTO: http
+      DRONE_RPC_HOST: drone
+      DRONE_RPC_SECRET: ${DRONE_RPC_SECRET}
+      DRONE_RUNNER_CAPACITY: 2
+      DRONE_RUNNER_NAME: local-runner
+      # The extension under test. The runner calls this for every build; the token
+      # must equal the extension's own shared secret.
+      DRONE_ENV_PLUGIN_ENDPOINT: http://environ:3001
+      DRONE_ENV_PLUGIN_TOKEN: ${DRONE_ENV_PLUGIN_SECRET}
+      # The same extension also serves Drone's secret extension, for from_secret lookups.
+      DRONE_SECRET_PLUGIN_ENDPOINT: http://environ:3001/secret
+      DRONE_SECRET_PLUGIN_TOKEN: ${DRONE_ENV_PLUGIN_SECRET}
+      DRONE_DEBUG: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  environ:
+    build:
+      context: ../app
+    image: ci-pluggable-secrets-extension:testenv
+    environment:
+      DRONE_ENV_PLUGIN_SECRET: ${DRONE_ENV_PLUGIN_SECRET}
+      HOST_ADDR: ${HOST_ADDR}
+      # The buildtoken issuer: the public HTTPS kite pagekite exposes this extension on,
+      # so a cluster's OIDC authenticator can reach the discovery/JWKS with a real cert.
+      # The token's `iss` becomes this, and it must match the cluster's issuer URL.
+      PAGEKITE_ISSUER: https://${PAGEKITE_CONTEXT:-environ}-${suffix}
+      # The "credentials" the deploytarget plugin hands out. Real ones would come
+      # from a secret store; the config only ever names the environment variable.
+      PROD_DEPLOY_TOKEN: ${PROD_DEPLOY_TOKEN}
+      STAGING_DEPLOY_TOKEN: ${STAGING_DEPLOY_TOKEN}
+    volumes:
+      - ./environ-config.yaml:/etc/drone-environ/config.yaml:ro
+      # The example plugins (stdout, deploytarget) are not in the image — they are
+      # dropped onto a plugin_paths directory, exactly as you would install your own.
+      # Mounting them here is a live demonstration of that mechanism; the config
+      # points plugin_paths at this path. See docs/sample_plugins/README.md.
+      - ../docs/sample_plugins:/etc/drone-environ/plugins:ro
+      # The JWT signing keys. Kept out of the image so tokens still verify across
+      # a rebuild, and a directory rather than one file so a new key can be published
+      # alongside the old one — see rotate-key.sh.
+      - ./keys:/etc/drone-environ/keys:ro
+      # (Woodpecker's public key is no longer mounted: the config fetches it live from
+      #  Woodpecker's /api/signature/public-key, so a fresh `up` self-heals its key.)
+    ports:
+      # Published only so you can poke it directly; the runner reaches it in-network.
+      - "3001:3001"
+    restart: unless-stopped
+
+  # Woodpecker, sharing the same Gitea and the same extension. It has no environment
+  # extension, so the extension serves its *secret* extension instead — same plugins,
+  # different dialect.
+  woodpecker-server:
+    image: woodpeckerci/woodpecker-server:v3.16.0
+    depends_on: [gitea]
+    environment:
+      WOODPECKER_HOST: http://${HOST_ADDR}:8000
+      WOODPECKER_SERVER_ADDR: ":8000"
+      WOODPECKER_GITEA: "true"
+      WOODPECKER_GITEA_URL: http://${HOST_ADDR}:3000
+      WOODPECKER_GITEA_CLIENT: ${WOODPECKER_GITEA_CLIENT_ID}
+      WOODPECKER_GITEA_SECRET: ${WOODPECKER_GITEA_CLIENT_SECRET}
+      WOODPECKER_ADMIN: ${GITEA_ADMIN_USER}
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET}
+      WOODPECKER_OPEN: "true"
+      # The extension under test, as Woodpecker's secret extension.
+      WOODPECKER_SECRET_EXTENSION_ENDPOINT: http://environ:3001/secrets
+      # Woodpecker refuses to call an extension on a private address unless it is
+      # allow-listed, and the whole test env lives on one.
+      WOODPECKER_EXTENSIONS_ALLOWED_HOSTS: "*"
+      WOODPECKER_LOG_LEVEL: debug
+    volumes:
+      - woodpecker-data:/var/lib/woodpecker
+    ports:
+      - "8000:8000"
+      # gRPC, for the agent. Published because the agent reaches the server through
+      # the host gateway rather than by container DNS — see below.
+      - "9000:9000"
+    restart: unless-stopped
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:v3.16.0
+    depends_on: [woodpecker-server]
+    environment:
+      # The agent image cannot resolve the compose service name — it dies with a gRPC
+      # DeadlineExceeded, which is what a failed name resolution looks like to grpc-go.
+      # The host gateway needs no container DNS and is how everything else here talks.
+      WOODPECKER_SERVER: ${HOST_ADDR}:9000
+      WOODPECKER_AGENT_SECRET: ${WOODPECKER_AGENT_SECRET}
+      WOODPECKER_MAX_WORKFLOWS: 2
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # Exposes the extension (the OIDC *issuer*) at https://${PAGEKITE_CONTEXT:-environ}-${suffix}
+  # with a real certificate. Native OIDC requires the issuer to be HTTPS and reachable by
+  # the cluster; pagekite provides both, and works across the kind/compose network boundary.
+  # A cluster's API server (or AWS IAM) then fetches discovery/JWKS from this kite. suffix
+  # and kitesecret come from e2e_test/.env.pagekite.
+  #
+  # python:3.11-slim (not the latest 3.13): pagekite.py is a long-standing codebase and is
+  # most reliable on 3.11; the tunnel is throwaway testenv scaffolding, so the older base
+  # is a deliberate, low-cost trade for a client that just works.
+  pagekite:
+    image: python:3.11-slim
+    depends_on: [environ]
+    environment:
+      KITE: ${PAGEKITE_CONTEXT:-environ}-${suffix}
+      KITESECRET: ${kitesecret}
+    # Fetch the current pagekite client at start (the old wattos/pagekite image is
+    # archived), then connect the extension to the kite. --clean ignores any baked-in rc;
+    # --defaults selects the pagekite.net frontends.
+    command:
+      - sh
+      - -c
+      - >
+        python -c "import urllib.request;
+        urllib.request.urlretrieve('https://pagekite.net/pk/pagekite.py','/pagekite.py')" &&
+        exec python /pagekite.py --clean --defaults
+        --service_on=http:$${KITE}:environ:3001:$${KITESECRET}
+    restart: unless-stopped
+
+volumes:
+  gitea-data:
+  drone-data:
+  woodpecker-data:

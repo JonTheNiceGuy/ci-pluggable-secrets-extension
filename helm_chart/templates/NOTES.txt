@@ -1,0 +1,21 @@
+{{ include "cpse.fullname" . }} is deployed.
+
+In-cluster endpoint:
+  http://{{ include "cpse.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+
+{{- if .Values.ingress.enabled }}
+Public issuer (must equal config.plugins.buildtoken.issuer):
+  https://{{ .Values.ingress.host }}
+  discovery: https://{{ .Values.ingress.host }}/.well-known/openid-configuration
+{{- else }}
+Ingress is disabled. The buildtoken issuer must still be an HTTPS URL that verifiers
+(a Kubernetes API server, AWS IAM) can reach — enable ingress or front the Service with
+your own TLS, and set config.plugins.buildtoken.issuer to that URL. See docs/deploying.md.
+{{- end }}
+
+{{- if not .Values.signingKeys }}
+
+WARNING: no signingKeys were provided, so buildtoken will fail to start unless key_dir is
+supplied another way. Pass one, e.g.:
+  helm upgrade --install ... --set-file 'signingKeys.2026-01-01\.pem=path/to/key.pem'
+{{- end }}

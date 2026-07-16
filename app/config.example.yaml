@@ -1,0 +1,57 @@
+# Copy to config.yaml and edit.
+
+server:
+  host: 0.0.0.0
+  port: 3000
+
+  # Must match DRONE_ENV_PLUGIN_TOKEN on the Drone runner. Keep it out of the file
+  # itself: ${VAR} and ${VAR:-default} are expanded from the environment, and if
+  # this key is absent entirely the $DRONE_ENV_PLUGIN_SECRET env var is used.
+  secret: ${DRONE_ENV_PLUGIN_SECRET}
+
+  log_level: INFO
+
+  # Reject signed requests whose Date is further adrift than this, in seconds.
+  max_clock_skew: 300
+
+  # What to do when a plugin raises: 'fail' returns a 500 and fails the build,
+  # 'skip' drops that plugin's variables and carries on with the rest.
+  on_plugin_error: fail
+
+# Serve Woodpecker's secret extension as well, from the same plugins. Woodpecker signs
+# with an ed25519 key pair rather than a shared secret, so this is its *public* key —
+# served at <woodpecker>/api/signature/public-key. Omit the block to serve Drone only.
+# Give exactly one of public_key_file or public_key_url (setting both is an error).
+# woodpecker:
+#   path: /secrets
+#   public_key_file: /etc/drone-environ/woodpecker-pubkey.pem
+#   # or fetch it from the server instead of mounting a file:
+#   # public_key_url: http://woodpecker:8000/api/signature/public-key
+#   # Re-fetch the public key when it is older than this on an incoming request, so a
+#   # Woodpecker key rotation is picked up without a restart. Defaults to
+#   # $WOODPECKER_SECRET_AGE_SECONDS, then 300. Also refreshable at POST /secrets/refresh-key.
+#   # key_max_age: 300
+
+# Serve Drone's *secret* extension too, so a step can pull a named secret with
+# `from_secret: NAME` instead of every plugin variable being injected into every step.
+# Signed the same way as the environment extension, so the secret defaults to the same
+# server.secret; set it here only if the runner uses a different DRONE_SECRET_PLUGIN_TOKEN.
+# Must not share a path with woodpecker above.
+# drone_secret:
+#   path: /secret
+#   # secret: ${DRONE_SECRET_PLUGIN_TOKEN}
+
+# Directories to search for drop-in plugins, alongside the built-in ones. Drop a
+# package in one of these and name it below to enable it. The example plugins (stdout,
+# deploytarget) live in docs/sample_plugins/ and are loaded this way — point this at wherever
+# you put them. buildtoken is built-in and needs no path. See docs/sample_plugins/README.md.
+plugin_paths:
+  - /etc/drone-environ/plugins
+
+# Only plugins named here run. Order matters: later plugins override the variables
+# set by earlier ones.
+plugins:
+  # An example plugin, loaded from a plugin_paths directory above.
+  stdout:
+    pretty: true
+    variable: stdout_plugin

@@ -1,0 +1,82 @@
+# The same pipeline, for Woodpecker.
+#
+# The big difference from .drone.yml: Woodpecker does not inject extension values into
+# every step. They arrive as *secrets*, and a step only sees the ones it asks for by
+# name, with from_secret. Ask for a secret that was not returned and the pipeline fails
+# to start, which is why the deploy_token step runs only on a deployment.
+steps:
+  - name: show-injected-secrets
+    image: alpine:3.24
+    environment:
+      STDOUT_PLUGIN:
+        from_secret: stdout_plugin
+      BUILD_TOKEN:
+        from_secret: DRONE_BUILD_TOKEN
+    commands:
+      - echo "stdout_plugin=$STDOUT_PLUGIN"
+      - test "$STDOUT_PLUGIN" = "enabled"
+      - echo "this pipeline is a '$CI_PIPELINE_EVENT' to '${CI_PIPELINE_DEPLOY_TARGET:-nowhere}'"
+      # Woodpecker masks every secret in the log, so the token prints as ***.
+      - echo "build token = $BUILD_TOKEN"
+      - test -n "$BUILD_TOKEN"
+      - 'echo "OK: the extension answered Woodpecker too"'
+
+  - name: verify-build-token
+    image: python:3.14-slim
+    environment:
+      DRONE_BUILD_TOKEN:
+        from_secret: DRONE_BUILD_TOKEN
+      # The issuer to pin and the audience to expect; up.sh fills the kite URL in.
+      TRUSTED_ISSUER: __PAGEKITE_ISSUER__
+      EXPECTED_AUDIENCE: kubernetes
+      # The verifier speaks Drone's variable names; map Woodpecker's onto them.
+      DRONE_REPO: ${CI_REPO}
+      # The token claims the canonical event name: Woodpecker's "deployment" is
+      # normalised to Drone's "promote". This step only runs on a deployment.
+      DRONE_BUILD_EVENT: promote
+      DRONE_BUILD_NUMBER: ${CI_PIPELINE_NUMBER}
+      DRONE_COMMIT_SHA: ${CI_COMMIT_SHA}
+    commands:
+      - pip install --quiet --disable-pip-version-check 'pyjwt[crypto]>=2.13'
+      - python verify_token.py
+    when:
+      - event: deployment
+
+  # Ask the cluster what this pipeline's token is authorized to do (the counterpart of the
+  # k8s-can-i step in .drone.yml). Woodpecker only substitutes ${...}, so bare $action /
+  # $(...) reach the shell as-is; the token arrives as a secret.
+  - name: k8s-can-i
+    image: alpine/k8s:1.36.2
+    environment:
+      DRONE_BUILD_TOKEN:
+        from_secret: DRONE_BUILD_TOKEN
+    commands:
+      - kubectl config set-cluster kind --server=https://172.17.0.1:6443 --certificate-authority=cluster-ca.pem --embed-certs=true
+      - kubectl config set-credentials build --token="$DRONE_BUILD_TOKEN"
+      - kubectl config set-context kind --cluster=kind --user=build
+      - kubectl config use-context kind
+      - 'echo "this $CI_PIPELINE_EVENT pipeline is authorized to:"'
+      - |
+        for action in 'get pods -n demo' 'get deployments -n production' \
+                      'create deployments -n app' 'patch deployments -n production' \
+                      'create namespaces' 'get secrets -n production'; do
+          echo "  can-i $action -> $(kubectl auth can-i $action 2>/dev/null)"
+        done
+    when:
+      - event: [pull_request, push, deployment]
+
+  # The same cluster deploy as .drone.yml. The token arrives as a secret; the DRONE_*
+  # context the script reads is mapped from Woodpecker's own variables (k8s-deploy.sh
+  # normalises the "deployment" event to "promote"). Runs on a push or a deployment.
+  - name: k8s-deploy
+    image: alpine/k8s:1.36.2
+    environment:
+      DRONE_BUILD_TOKEN:
+        from_secret: DRONE_BUILD_TOKEN
+      DRONE_BUILD_EVENT: ${CI_PIPELINE_EVENT}
+      DRONE_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}
+      DRONE_DEPLOY_TO: ${CI_PIPELINE_DEPLOY_TARGET}
+    commands:
+      - bash k8s-deploy.sh
+    when:
+      - event: [pull_request, push, deployment]

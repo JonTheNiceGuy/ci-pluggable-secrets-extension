@@ -1,0 +1,156 @@
+# What each build identity may do in the cluster. Rendered by kind-up.sh, which fills in
+# __SLUG__ with the demo repo's slug (e.g. droneadmin/drone-environ-demo).
+#
+# The API server authenticates a build token via OIDC (see auth-config.yaml.tmpl): the
+# username is oidc:<sub> and the groups are oidc:<sub-and-its-prefixes>. These bindings key
+# on those groups:
+#
+#   oidc:repo:__SLUG__                              any build of the repo -> read pods in `demo`
+#   oidc:repo:__SLUG__:ref:refs/heads/main          a push to main        -> apply Deployments, create namespaces
+#   oidc:repo:__SLUG__:environment:production        a promotion to prod   -> redeploy the prod Deployment only
+#
+# The group strings are exactly the token's `sub` and its prefixes, so an EKS IAM trust
+# policy would match the same values on `sub` (StringEquals on the full sub, StringLike
+# repo:__SLUG__:* for the baseline). A build whose specific group has no binding falls back
+# to whatever the shared repo:__SLUG__ baseline grants — which is how "any random branch"
+# gets the read-only tier.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+# Something for a production promotion to redeploy. `kubectl rollout restart` patches this
+# object; the seed pod uses the pause image the kind node already has.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: production
+  labels: {app: demo-app}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: demo-app}
+  template:
+    metadata:
+      labels: {app: demo-app}
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+---
+# --- baseline: any build of the repo may read pods in `demo` -----------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: repo-pod-reader
+  namespace: demo
+subjects:
+  - kind: Group
+    name: "oidc:repo:__SLUG__"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# --- a pull request may preview (read-only) what a merge would change ---------------
+# Read-only across deployments/pods/namespaces so a PR can inspect current state, but no
+# write verbs. (A full server-side `kubectl diff` needs dry-run write access, which RBAC
+# authorizes as a real write, so it is deliberately out of reach here.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: previewer
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pull-request-previewer
+subjects:
+  - kind: Group
+    name: "oidc:repo:__SLUG__:pull_request"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: previewer
+  apiGroup: rbac.authorization.k8s.io
+---
+# --- a push to main may create namespaces + apply Deployments (cluster-wide) --------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployer
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, create]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: main-deployer
+subjects:
+  - kind: Group
+    name: "oidc:repo:__SLUG__:ref:refs/heads/main"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+# --- a promotion to production may redeploy the existing prod Deployment, no create --
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redeployer
+  namespace: production
+rules:
+  # get + patch is exactly `kubectl rollout restart`. No `create`, so a production
+  # promotion cannot introduce a new workload — only restart one main already deployed.
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: production-deployer
+  namespace: production
+subjects:
+  - kind: Group
+    name: "oidc:repo:__SLUG__:environment:production"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: redeployer
+  apiGroup: rbac.authorization.k8s.io
